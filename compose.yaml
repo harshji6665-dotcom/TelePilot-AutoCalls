@@ -1,0 +1,62 @@
+services:
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Run python3 scripts/setup.py first}
+      MONGO_INITDB_DATABASE: telepilot
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Run setup.py}
+    volumes:
+      - mongo_data:/data/db
+      - ./docker/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    # Deliberately no published database port.
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping:1}).ok"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?Run setup.py}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?Run setup.py}
+      BOT_TOKEN: ${BOT_TOKEN:?Run setup.py}
+      MONGO_URI: ${MONGO_URI:?Run setup.py}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?Run setup.py}
+      LOGIN_MODE: ${LOGIN_MODE:-chat}
+      MAX_POOL_ACCOUNTS: ${MAX_POOL_ACCOUNTS:-}
+      AUTO_CALLS_ENABLED: ${AUTO_CALLS_ENABLED:-}
+      START_PHOTO_ENABLED: ${START_PHOTO_ENABLED:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-${SUPPORT_USERNAME:-}}
+    depends_on:
+      mongo: {condition: service_healthy}
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - app_data:/app/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    ulimits:
+      nofile: {soft: 8192, hard: 8192}
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+
+volumes:
+  mongo_data:
+  app_data:

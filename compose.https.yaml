@@ -1,0 +1,23 @@
+services:
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Set your HTTPS domain with setup.py}
+      TLS_EMAIL: ${TLS_EMAIL:?Set your TLS certificate email with setup.py}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app: {condition: service_started}
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+volumes:
+  caddy_data:
+  caddy_config:

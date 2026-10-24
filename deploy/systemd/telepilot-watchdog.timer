@@ -1,0 +1,11 @@
+[Unit]
+Description=Check TelePilot container health without undoing a manual stop
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15s
+Unit=telepilot-watchdog.service
+
+[Install]
+WantedBy=timers.target

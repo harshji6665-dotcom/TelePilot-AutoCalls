@@ -1,0 +1,23 @@
+name: Test and build
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:8.0
+        ports: ['27018:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok'"
+          --health-interval 10s --health-timeout 5s --health-retries 10 --ulimit nofile=65536:65536
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.13'}
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app scripts tests
+      - run: python scripts/check_compat.py
+      - run: python -m pytest -q
+        env: {TEST_MONGO_URI: 'mongodb://127.0.0.1:27018'}
+      - run: docker build -t telepilot:test .
+      - run: docker run --rm --entrypoint python telepilot:test scripts/check_compat.py

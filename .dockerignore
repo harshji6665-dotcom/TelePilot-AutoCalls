@@ -1,0 +1,35 @@
+.env
+.env.*
+config.json
+.git
+.gitignore
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+tests
+docs
+*.zip
+*.log
+data
+TEST_REPORT.md
+
+railway.env.example
+
+# Docker's unqualified patterns do not reliably exclude nested build artifacts.
+# Never copy local bytecode/session files into the runtime image.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+**/.cache
+**/.env
+**/.env.*
+**/config.json
+**/*.session
+**/*.session-journal
+**/*.log
+**/*.zip
+**/data
+**/uploads

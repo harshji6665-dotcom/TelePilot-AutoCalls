@@ -1,0 +1,6 @@
+{$PUBLIC_DOMAIN} {
+    tls {$TLS_EMAIL}
+    encode zstd gzip
+    reverse_proxy app:8080
+    # Access logging intentionally off. Login credentials are never logged.
+}

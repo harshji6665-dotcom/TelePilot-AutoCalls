@@ -1,0 +1,31 @@
+# Existing bundled-Mongo deployment:
+# docker compose -f compose.yaml -f compose.vps200.yaml up -d --build
+# Retain the SAME Compose project name, private config/.env and data volumes.
+# One app replica ONLY. Resource budget: 48 GiB app + 8 GiB Mongo; leave OS headroom.
+services:
+  mongo:
+    command: ["mongod", "--wiredTigerCacheSizeGB", "6"]
+    mem_limit: 8g
+    mem_reservation: 2g
+    cpus: 1.0
+    stop_grace_period: 120s
+    pids_limit: 1024
+
+  app:
+    environment:
+      # Overrides a stale old MAX_POOL_ACCOUNTS=100 in .env deliberately.
+      MAX_POOL_ACCOUNTS: ${VPS_MAX_POOL_ACCOUNTS:-200}
+      MANUAL_HEALTH_TIMEOUT_SECONDS: ${MANUAL_HEALTH_TIMEOUT_SECONDS:-1800}
+      OWNER_IDS: ${OWNER_IDS:-}
+      MONGO_DATABASE: ${MONGO_DATABASE:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+    mem_limit: 48g
+    mem_reservation: 4g
+    cpus: 6.0
+    pids_limit: 4096
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    stop_grace_period: 300s
+    healthcheck:
+      start_period: 600s

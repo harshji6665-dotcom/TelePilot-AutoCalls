@@ -1,0 +1,21 @@
+[Unit]
+Description=TelePilot single-container unhealthy watchdog
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Adjust this absolute path if the source is installed elsewhere.
+ExecStart=/usr/bin/python3 /opt/telepilot/scripts/health_watchdog.py
+EnvironmentFile=/etc/telepilot-watchdog.conf
+TimeoutStartSec=400
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+StateDirectory=telepilot-watchdog
+ReadWritePaths=/var/lib/telepilot-watchdog
+# Docker socket access is host-admin authority: install only trusted code.

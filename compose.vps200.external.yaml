@@ -1,0 +1,49 @@
+# Standalone VPS profile for an EXISTING EXTERNAL Mongo database.
+# Do NOT combine with compose.yaml; no unused local Mongo/root secrets are required.
+# docker compose -f compose.vps200.external.yaml up -d --build
+# Preserve the original MONGO_URI, MONGO_DATABASE, encryption key and account data.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 300s
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?Set original API ID privately}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?Set original API hash privately}
+      BOT_TOKEN: ${BOT_TOKEN:?Set original bot token privately}
+      MONGO_URI: ${MONGO_URI:?Set original external Mongo URI privately}
+      MONGO_DATABASE: ${MONGO_DATABASE:-}
+      OWNER_IDS: ${OWNER_IDS:-}
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?Preserve the ORIGINAL encryption key}
+      LOGIN_MODE: ${LOGIN_MODE:-chat}
+      MAX_POOL_ACCOUNTS: ${VPS_MAX_POOL_ACCOUNTS:-200}
+      MANUAL_HEALTH_TIMEOUT_SECONDS: ${MANUAL_HEALTH_TIMEOUT_SECONDS:-1800}
+      AUTO_CALLS_ENABLED: ${AUTO_CALLS_ENABLED:-}
+      START_PHOTO_ENABLED: ${START_PHOTO_ENABLED:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-${SUPPORT_USERNAME:-}}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-}
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - app_data:/app/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 48g
+    mem_reservation: 4g
+    cpus: 6.0
+    pids_limit: 4096
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    healthcheck:
+      start_period: 600s
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "3"}
+volumes:
+  app_data:
