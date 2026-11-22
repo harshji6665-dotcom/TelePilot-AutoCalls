@@ -21,11 +21,11 @@ httpx==0.28.1
 idna==3.20
 magic-filter==1.0.12
 multidict==7.1.0
-ntgcalls==3.0.3
+ntgcalls==3.0.7
 opentelemetry-api==1.45.1
 packaging==26.3
 propcache==0.5.4
-py-tgcalls==3.0.0
+py-tgcalls==3.0.1
 pyaes==1.6.1
 pyasn1==0.6.4
 pycparser==3.11

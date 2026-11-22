@@ -1,4 +1,4 @@
-"""Per-adapter task ownership for the pinned PyTgCalls 3.0.0/NTgCalls 3.0.3.
+"""Per-adapter task ownership for the pinned PyTgCalls 3.0.1/NTgCalls 3.0.7.
 
 The SDK has no public stop(). Its native thread callbacks otherwise discard
 run_coroutine_threadsafe futures. Keep task/future ownership, close the callback

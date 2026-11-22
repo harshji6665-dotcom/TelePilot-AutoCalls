@@ -1,7 +1,7 @@
 aiogram==3.31.0
 Telethon==1.45.0
-py-tgcalls==3.0.0
-ntgcalls==3.0.3
+py-tgcalls==3.0.1
+ntgcalls==3.0.7
 pymongo==4.18.3
 fastapi==0.143.0
 uvicorn==0.54.0

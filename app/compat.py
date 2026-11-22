@@ -37,8 +37,8 @@ def local_compatibility(calls_enabled=True):
         from ntgcalls import NTgCalls
         from .native_lifecycle import CALLBACK_METHODS
 
-        assert importlib.metadata.version("py-tgcalls") == "3.0.0"
-        assert importlib.metadata.version("ntgcalls") == "3.0.3"
+        assert importlib.metadata.version("py-tgcalls") == "3.0.1"
+        assert importlib.metadata.version("ntgcalls") == "3.0.7"
         assert hasattr(PyTgCalls, "_handle_mtproto_updates")
         for callback, path in CALLBACK_METHODS.items():
             assert hasattr(NTgCalls, callback)
