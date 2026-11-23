@@ -332,6 +332,36 @@ class Targets:
             await self.verify_control(user_id, target["chat_id"])
         return target
 
+    async def refresh_call_link(self, target):
+        """Mint a fresh non-request invite while the bot is still an admin.
+
+        Auto-calls use this when Telegram reports InviteHashExpired so accounts
+        can keep joining without the operator pasting a new link by hand.
+        """
+        chat_id = target["chat_id"]
+        await self.verify_control(target["user_id"], chat_id)
+        old = target.get("call_link")
+        link = await self.bot.create_chat_invite_link(
+            chat_id,
+            name=f"TelePilot auto {target['user_id']}"[:32],
+            creates_join_request=False,
+        )
+        await self.store.db.targets.update_one(
+            {"_id": target["_id"]},
+            {"$set": {"call_link": link.invite_link, "call_link_refreshed_at": now()}},
+        )
+        target["call_link"] = link.invite_link
+        if old and old != link.invite_link:
+            with suppress(Exception):
+                await self.bot.revoke_chat_invite_link(chat_id, old)
+        await self.store.audit(
+            target["user_id"],
+            "call_link_refreshed",
+            target_id=target["_id"],
+            chat_id=chat_id,
+        )
+        return link.invite_link
+
     async def validate_link(self, target, text):
         parsed = parse_link(text)
         if parsed.kind == "public":

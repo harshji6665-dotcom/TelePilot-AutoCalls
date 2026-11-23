@@ -160,12 +160,17 @@ class AutoCalls:
         try:
             try:
                 call = await self.r.pool.get_call(slot, target["chat_id"])
-            except (ValueError, errors.ChannelPrivateError):
-                # A private chat without a cached access hash needs the managed invite.
-                # Never use a busy manual-job account or arbitrary private invite here.
-                result = await self.r.pool.ensure_member(
-                    slot, parse_link(target["call_link"]), target["chat_id"], before=lambda: self.allowed(target, control=True)
-                )
+            except (ValueError, errors.ChannelPrivateError, errors.InviteHashExpiredError):
+                # Private chat / expired stored invite: bot-admin mints a fresh link.
+                try:
+                    result = await self.r.pool.ensure_member(
+                        slot, parse_link(target["call_link"]), target["chat_id"], before=lambda: self.allowed(target, control=True)
+                    )
+                except errors.InviteHashExpiredError:
+                    await self.r.targets.refresh_call_link(target)
+                    result = await self.r.pool.ensure_member(
+                        slot, parse_link(target["call_link"]), target["chat_id"], before=lambda: self.allowed(target, control=True)
+                    )
                 if result == "request_sent":
                     raise UserError("Detector membership is awaiting approval; this is not a joined account.")
                 call = await self.r.pool.get_call(slot, target["chat_id"])
@@ -372,14 +377,45 @@ class AutoCalls:
         session = self.sessions[sid]
         target, chat_id = session["target"], session["chat_id"]
         kept = False
+        fatal_link = False
         try:
+            if session.get("link_dead"):
+                raise UserError("Invite/call link expired and bot could not mint a fresh one. Re-check bot admin + Invite Users.")
             await self.allowed(target, control=True)
             if await self.r.store.setting("maintenance", False):
                 raise UserError("Maintenance is enabled.")
-            link = parse_link(target["call_link"])
-            membership = await self.r.pool.ensure_member(
-                slot, link, chat_id, before=lambda: self.allowed(target, control=True)
-            )
+
+            async def ensure_with_refresh():
+                """Join membership using stored link; on expire, bot mints a new invite."""
+                nonlocal target
+                link = parse_link(target["call_link"])
+                try:
+                    return await self.r.pool.ensure_member(
+                        slot, link, chat_id, before=lambda: self.allowed(target, control=True)
+                    ), link
+                except errors.InviteHashExpiredError:
+                    logger.info("Auto-call invite expired; refreshing via bot admin; target=%s", target["_id"])
+                    try:
+                        await self.r.targets.refresh_call_link(target)
+                    except Exception as refresh_exc:
+                        logger.warning(
+                            "Auto-call link refresh failed; target=%s error=%s",
+                            target["_id"],
+                            type(refresh_exc).__name__,
+                        )
+                        raise UserError(
+                            "Invite expired and bot could not create a new one. "
+                            "Confirm the bot is admin with Invite Users permission."
+                        ) from refresh_exc
+                    # Keep in-memory session target in sync for other connects.
+                    session["target"] = target
+                    session.pop("link_dead", None)
+                    link = parse_link(target["call_link"])
+                    return await self.r.pool.ensure_member(
+                        slot, link, chat_id, before=lambda: self.allowed(target, control=True)
+                    ), link
+
+            membership, link = await ensure_with_refresh()
             if membership == "request_sent":
                 raise UserError("Membership is awaiting approval.")
 
@@ -391,9 +427,18 @@ class AutoCalls:
                 if not current or current.id != session["call_id"]:
                     raise UserError("Original call ended or changed; rescan before joining.")
 
-            # Pass invite_hash (voicechat/videochat token) exactly like manual jobs.
-            # Missing hash is a common cause of detect-ok / assigned=0 on hashed calls.
-            await self.r.pool.join_call(slot, chat_id, link.invite_hash, before=before)
+            # Member accounts join the live call; voicechat hash is optional.
+            # Prefer no-hash join first (listener), then hash if provided.
+            try:
+                await self.r.pool.join_call(slot, chat_id, None, before=before)
+            except Exception as first_exc:
+                if link.invite_hash and not isinstance(first_exc, errors.InviteHashExpiredError):
+                    logger.info("Auto-call plain join failed; retrying with invite_hash; sid=%s error=%s", sid, type(first_exc).__name__)
+                    await self.r.pool.join_call(slot, chat_id, link.invite_hash, before=before)
+                elif isinstance(first_exc, errors.InviteHashExpiredError) and link.invite_hash:
+                    await self.r.pool.join_call(slot, chat_id, None, before=before)
+                else:
+                    raise
             await self.allowed(target)  # Disable/expiry during a native join cannot keep the connection.
             if not await self.r.pool.in_call(slot, chat_id):
                 raise UserError("Native call connection was not confirmed.")
@@ -406,9 +451,7 @@ class AutoCalls:
             raise
         except Exception as exc:
             await self.error_account(slot, exc)
-            # Do not immediately rotate failed/banned/kicked identities back into
-            # the same call on every poll. A new call has a new bounded block set.
-            detail = str(exc)[:160] if isinstance(exc, UserError) else type(exc).__name__
+            detail = str(exc)[:200] if str(exc) else type(exc).__name__
             logger.warning(
                 "Auto-call join failed; sid=%s account=%s error=%s detail=%s",
                 sid,
@@ -416,7 +459,18 @@ class AutoCalls:
                 type(exc).__name__,
                 detail,
             )
-            await self.block(sid, slot.account_id, type(exc).__name__)
+            if not isinstance(exc, UserError):
+                logger.exception("Auto-call join unexpected error; sid=%s account=%s", sid, slot.account_id)
+            # Only mark link_dead when refresh already failed; otherwise other accounts can retry.
+            if isinstance(exc, UserError) and "could not create a new one" in str(exc).lower():
+                session["link_dead"] = True
+                fatal_link = True
+                await self.r.store.db.targets.update_one(
+                    {"_id": target["_id"]},
+                    {"$set": {"auto_call.state": "bot cannot mint invite — check Invite Users admin right"}},
+                )
+            elif not fatal_link:
+                await self.block(sid, slot.account_id, type(exc).__name__)
         finally:
             if not kept:
                 try:
