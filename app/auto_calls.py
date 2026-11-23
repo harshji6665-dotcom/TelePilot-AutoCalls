@@ -179,14 +179,23 @@ class AutoCalls:
     async def ensure_session(self, target, call, plan):
         sid = session_id(target["chat_id"], call.id)
         row = await self.r.store.db.auto_sessions.find_one({"_id": sid})
+        window = timedelta(minutes=self.r.config.limits.max_call_minutes)
+        fresh_deadline = now() + window
         if not row:
             midnight = now().replace(hour=0, minute=0, second=0, microsecond=0)
             count = await self.r.store.db.auto_sessions.count_documents({"user_id": target["user_id"], "created_at": {"$gte": midnight}})
             if count >= self.r.config.limits.max_auto_sessions_per_user_day:
                 raise UserError("Automatic-call daily safety cap reached; new calls wait until UTC midnight.")
             saved = target.get("auto_call", {})
-            deadline = saved.get("last_deadline") if saved.get("last_call_id") == call.id else None
-            deadline = deadline or now() + timedelta(minutes=self.r.config.limits.max_call_minutes)
+            # Reuse prior deadline only when it is still in the future. An expired
+            # last_deadline from an earlier failed/boot cycle must not permanently
+            # lock the same live call_id out of joining.
+            prior = saved.get("last_deadline") if saved.get("last_call_id") == call.id else None
+            if prior is not None and getattr(prior, "tzinfo", None) is None:
+                from datetime import UTC as _UTC
+
+                prior = prior.replace(tzinfo=_UTC)
+            deadline = prior if prior and prior > now() else fresh_deadline
             row = {
                 "_id": sid,
                 "chat_id": target["chat_id"],
@@ -216,15 +225,52 @@ class AutoCalls:
                 {"_id": sid}, {"$set": {"target_id": target["_id"], "user_id": target["user_id"]}}
             )
             row.update(target_id=target["_id"], user_id=target["user_id"])
+
+        deadline = row.get("deadline")
+        if deadline is not None and getattr(deadline, "tzinfo", None) is None:
+            from datetime import UTC as _UTC
+
+            deadline = deadline.replace(tzinfo=_UTC)
+            row["deadline"] = deadline
+
+        # If this call never got a successful join (assigned_count=0) but was
+        # marked terminal / expired during empty-pool boots, reopen one window.
+        never_joined = not row.get("assigned_count") and not self.assignments.get(sid)
+        expired = not deadline or deadline <= now()
+        if (row.get("terminal") or expired) and never_joined:
+            deadline = fresh_deadline
+            row["deadline"] = deadline
+            row["terminal"] = False
+            row["status"] = "waiting for accounts"
+            row["blocked_accounts"] = []
+            await self.r.store.db.auto_sessions.update_one(
+                {"_id": sid},
+                {
+                    "$set": {
+                        "deadline": deadline,
+                        "terminal": False,
+                        "status": "waiting for accounts",
+                        "blocked_accounts": [],
+                    }
+                },
+            )
+            logger.info("Auto-call session reopened; sid=%s reason=never_joined_expired", sid)
+        elif expired:
+            await self.terminal(sid, "safety duration reached")
+            logger.info("Auto-call session skipped; sid=%s reason=safety_duration_reached", sid)
+            await self.r.store.db.targets.update_one(
+                {"_id": target["_id"], "auto_call.enabled": True},
+                {"$set": {"auto_call.state": "safety duration reached; start a new call", "auto_call.session_id": sid}},
+            )
+            return None
+        elif row.get("terminal"):
+            logger.info("Auto-call session skipped; sid=%s reason=terminal", sid)
+            return None
+
         await self.r.store.db.targets.update_one(
             {"_id": target["_id"], "auto_call.enabled": True},
             {"$set": {"auto_call.last_call_id": call.id, "auto_call.last_deadline": row["deadline"], "auto_call.session_id": sid}},
         )
-        if row["deadline"] <= now():
-            await self.terminal(sid, "safety duration reached")
-            return None
-        if row.get("terminal"):
-            return None
         row.update(
             target=target,
             cap=min(plan["max_accounts"], self.r.config.limits.max_pool_accounts),
@@ -330,8 +376,9 @@ class AutoCalls:
             await self.allowed(target, control=True)
             if await self.r.store.setting("maintenance", False):
                 raise UserError("Maintenance is enabled.")
+            link = parse_link(target["call_link"])
             membership = await self.r.pool.ensure_member(
-                slot, parse_link(target["call_link"]), chat_id, before=lambda: self.allowed(target, control=True)
+                slot, link, chat_id, before=lambda: self.allowed(target, control=True)
             )
             if membership == "request_sent":
                 raise UserError("Membership is awaiting approval.")
@@ -344,7 +391,9 @@ class AutoCalls:
                 if not current or current.id != session["call_id"]:
                     raise UserError("Original call ended or changed; rescan before joining.")
 
-            await self.r.pool.join_call(slot, chat_id, before=before)
+            # Pass invite_hash (voicechat/videochat token) exactly like manual jobs.
+            # Missing hash is a common cause of detect-ok / assigned=0 on hashed calls.
+            await self.r.pool.join_call(slot, chat_id, link.invite_hash, before=before)
             await self.allowed(target)  # Disable/expiry during a native join cannot keep the connection.
             if not await self.r.pool.in_call(slot, chat_id):
                 raise UserError("Native call connection was not confirmed.")
@@ -352,12 +401,21 @@ class AutoCalls:
                 raise UserError("Automatic-call safety duration elapsed.")
             self.assignments[sid][slot.account_id] = slot
             kept = True
+            logger.info("Auto-call join ok; sid=%s account=%s chat=%s", sid, slot.account_id, chat_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             await self.error_account(slot, exc)
             # Do not immediately rotate failed/banned/kicked identities back into
             # the same call on every poll. A new call has a new bounded block set.
+            detail = str(exc)[:160] if isinstance(exc, UserError) else type(exc).__name__
+            logger.warning(
+                "Auto-call join failed; sid=%s account=%s error=%s detail=%s",
+                sid,
+                slot.account_id,
+                type(exc).__name__,
+                detail,
+            )
             await self.block(sid, slot.account_id, type(exc).__name__)
         finally:
             if not kept:
@@ -399,6 +457,15 @@ class AutoCalls:
             )
             caps[sid] = min(session["cap"], possible)
         desired = fair_shares(capacity, caps, {sid: len(self.assignments[sid]) for sid in active})
+        logger.info(
+            "Auto-call reconcile; active=%s eligible=%s capacity=%s manual_need=%s desired=%s caps=%s",
+            len(active),
+            len(eligible),
+            capacity,
+            manual_need,
+            {k: desired.get(k, 0) for k in active},
+            {k: caps.get(k, 0) for k in active},
+        )
         # Finish all excess/ended departures BEFORE any replacement reservation.
         for sid, accounts in list(self.assignments.items()):
             excess = max(0, len(accounts) - desired.get(sid, 0))
@@ -416,20 +483,29 @@ class AutoCalls:
             }
             count = min(need, sum(row["_id"] not in excluded for row in available))
             if count <= 0:
+                logger.info(
+                    "Auto-call no free accounts after exclude; sid=%s need=%s available=%s excluded=%s",
+                    sid,
+                    need,
+                    len(available),
+                    len(excluded),
+                )
                 continue
             slots = await self.r.pool.reserve("auto:" + sid, count, exclude=excluded)
-            if slots:
-                try:
-                    await asyncio.gather(*(self.connect(sid, slot) for slot in slots))
-                finally:
-                    # Cancellation can arrive before a gather child enters its
-                    # try/finally. The reservation-owning parent covers that window.
-                    for slot in slots:
-                        if slot.busy_job == "auto:" + sid and slot.account_id not in self.assignments[sid]:
-                            try:
-                                await self.r.pool.safe_leave_call(slot, session["chat_id"])
-                            finally:
-                                await self.r.pool.release([slot], "auto:" + sid)
+            if not slots:
+                logger.info("Auto-call reserve empty; sid=%s count=%s", sid, count)
+                continue
+            try:
+                await asyncio.gather(*(self.connect(sid, slot) for slot in slots))
+            finally:
+                # Cancellation can arrive before a gather child enters its
+                # try/finally. The reservation-owning parent covers that window.
+                for slot in slots:
+                    if slot.busy_job == "auto:" + sid and slot.account_id not in self.assignments[sid]:
+                        try:
+                            await self.r.pool.safe_leave_call(slot, session["chat_id"])
+                        finally:
+                            await self.r.pool.release([slot], "auto:" + sid)
         for sid, session in list(self.sessions.items()):
             count = len(self.assignments[sid])
             state = "active" if count else "waiting for free accounts" if sid in active else "paused"
