@@ -6,7 +6,7 @@ Prepared **16 October 2026**. Keep the **original encryption key, database, priv
 
 The newest attachment contains **27 records: 21 warnings and 6 informational records**. All 21 warnings are `Call leave failed … NotInCallError`. It does **not** show an authorization-revoked/expired/duplicated error, a ban or an actual Telegram logout. Raw logs, real account IDs and credentials are not included in this project.
 
-The pinned PyTgCalls 3.0.1 implementation raises `NotInCallError` when the native binding has no connection for that chat. The previous generic leave-failure path retired the entire local account transport even for this already-absent call. That is a local disconnect, **not** `TelegramClient.log_out()`. It could make a valid saved account look unavailable; these logs alone cannot prove why a user subsequently chose or needed sign-in.
+The pinned PyTgCalls 3.0.0 implementation raises `NotInCallError` when the native binding has no connection for that chat. The previous generic leave-failure path retired the entire local account transport even for this already-absent call. That is a local disconnect, **not** `TelegramClient.log_out()`. It could make a valid saved account look unavailable; these logs alone cannot prove why a user subsequently chose or needed sign-in.
 
 Separate code review found other problems: automatic authorization-status changes deleted ciphertext; recovery could wait another full five-minute scan or remain stuck behind failed cleanup; DC/key changes were not checkpointed; reauthentication disabled the old account before success; stale workers and ambiguous storage acknowledgements needed stronger protection. The release addresses these application issues without pretending the attachment proves every failure occurred.
 

@@ -23,7 +23,7 @@ An unexpectedly disconnected live slot is immediately excluded from reservation 
 
 ### Own native callbacks per adapter
 
-Pinned PyTgCalls 3.0.1 exposes no public `stop()` method. Its NTgCalls callback bridge previously scheduled coroutines through discarded `run_coroutine_threadsafe` futures. The application now owns the eleven native callback registrations for the pinned 3.0.1/3.0.7 pair and the SDK MTProto update handler:
+Pinned PyTgCalls 3.0.0 exposes no public `stop()` method. Its NTgCalls callback bridge previously scheduled coroutines through discarded `run_coroutine_threadsafe` futures. The application now owns the eleven native callback registrations for the pinned 3.0.0/3.0.3 pair and the SDK MTProto update handler:
 
 - retain strong references to actual running callback Tasks and their concurrent futures;
 - retrieve failures without changing the future result the caller receives;
