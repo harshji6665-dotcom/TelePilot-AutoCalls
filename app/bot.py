@@ -1188,7 +1188,11 @@ class BotPanel(PlanUI, AutomationUI, StartPhotoUI, SessionSafetyUI):
         if await state.get_state() == Input.chat_signin.state:
             ctx = self.r.login.chat_contexts.get(message.from_user.id)
             command = (message.text or "").strip().split("@", 1)[0].lower()
-            if command in {"/start", "/panel"} and (not ctx or ctx.stage != "password"):
+            # Escape hatch: diagnostics/help/cancel must not be swallowed as OTP/2FA input.
+            if command in {"/diag", "/help", "/id", "/chatid", "/cancel"}:
+                await self.r.login.cancel_actor(message.from_user.id)
+                await state.clear()
+            elif command in {"/start", "/panel"} and (not ctx or ctx.stage != "password"):
                 await self.r.login.cancel_actor(message.from_user.id)
                 await state.clear()
             else:
@@ -1219,6 +1223,54 @@ class BotPanel(PlanUI, AutomationUI, StartPhotoUI, SessionSafetyUI):
                 return
             if command in ("/id", "/chatid"):
                 await message.answer(f"User ID: <code>{uid}</code>\nChat ID: <code>{message.chat.id}</code>")
+                return
+            if command == "/diag":
+                # Always answer; never hang behind staff-only routing or a slow pool query.
+                try:
+                    role = await self.r.access.role(uid)
+                    if role == Role.USER:
+                        await message.answer(
+                            "<blockquote>Owner/admin access required for /diag. Your user ID: "
+                            f"<code>{uid}</code></blockquote>"
+                        )
+                        return
+                    saved = await self.r.store.db.accounts.count_documents({})
+                    enabled = await self.r.store.db.accounts.count_documents({"enabled": True})
+                    healthy_db = await self.r.store.db.accounts.count_documents({"enabled": True, "status": "healthy"})
+                    connected = sum(1 for slot in self.r.pool.slots.values() if not slot.disconnected and not slot.closing)
+                    free = sum(
+                        1
+                        for slot in self.r.pool.slots.values()
+                        if not slot.disconnected and not slot.closing and not slot.busy_job
+                    )
+                    auto_targets = await self.r.store.db.targets.count_documents({"auto_call.enabled": True})
+                    assigned = sum(len(accounts) for accounts in self.r.auto_calls.assignments.values())
+                    maintenance = await self.r.store.setting("maintenance", False)
+                    safety = "paused" if self.r.pool.safety.paused else "ok"
+                    cycle = self.r.auto_calls.last_cycle_at
+                    cycle_text = cycle.isoformat() if hasattr(cycle, "isoformat") else str(cycle or "never")
+                    await message.answer(
+                        "<b>runtime diagnostics</b>\n"
+                        f"<blockquote>ready · {self.r.ready}\n"
+                        f"leader · {getattr(self.r, 'leader', False)}\n"
+                        f"pool_loading · {getattr(self.r, 'pool_loading', False)}\n"
+                        f"maintenance · {maintenance}\n"
+                        f"calls_enabled · {self.r.config.calls_enabled}\n"
+                        f"auto_calls_enabled · {self.r.config.auto_calls_enabled}\n"
+                        f"session_safety · {html(safety)}\n"
+                        f"accounts saved/enabled/healthy_db/connected/free · "
+                        f"{saved}/{enabled}/{healthy_db}/{connected}/{free}\n"
+                        f"auto targets enabled · {auto_targets}\n"
+                        f"auto sessions assigned · {assigned}\n"
+                        f"last auto cycle · {html(cycle_text)}\n"
+                        f"last auto error · {html(self.r.auto_calls.last_error_type or 'none')}</blockquote>\n"
+                        "If free=0 while connected&gt;0: accounts are busy on jobs/calls.\n"
+                        "If healthy_db&gt;connected: wait for pool finish or /health.\n"
+                        "InviteHashExpiredError: refresh the invite link on that target."
+                    )
+                except Exception as exc:
+                    logger.exception("diag failed; error=%s", type(exc).__name__)
+                    await message.answer(f"<blockquote>diag error: {html(type(exc).__name__)}</blockquote>")
                 return
             if command == "/plan":
                 await self.plan(message, uid)
@@ -1308,35 +1360,6 @@ class BotPanel(PlanUI, AutomationUI, StartPhotoUI, SessionSafetyUI):
                 return
             if command == "/updates":
                 await message.answer("<blockquote>" + html((await self.r.compat.check(notify=False))[:3400]) + "</blockquote>")
-                return
-            if command == "/diag":
-                await self.r.access.require_staff(uid)
-                saved = await self.r.store.db.accounts.count_documents({})
-                enabled = await self.r.store.db.accounts.count_documents({"enabled": True})
-                healthy_db = await self.r.store.db.accounts.count_documents({"enabled": True, "status": "healthy"})
-                connected = sum(1 for slot in self.r.pool.slots.values() if not slot.disconnected and not slot.closing)
-                available = len(await self.r.pool.available())
-                auto_targets = await self.r.store.db.targets.count_documents({"auto_call.enabled": True})
-                assigned = sum(len(accounts) for accounts in self.r.auto_calls.assignments.values())
-                maintenance = await self.r.store.setting("maintenance", False)
-                safety = "paused" if self.r.pool.safety.paused else "ok"
-                await message.answer(
-                    "<b>runtime diagnostics</b>\n"
-                    f"<blockquote>ready · {self.r.ready}\n"
-                    f"leader · {getattr(self.r, 'leader', False)}\n"
-                    f"maintenance · {maintenance}\n"
-                    f"calls_enabled · {self.r.config.calls_enabled}\n"
-                    f"auto_calls_enabled · {self.r.config.auto_calls_enabled}\n"
-                    f"session_safety · {html(safety)}\n"
-                    f"accounts saved/enabled/healthy_db/connected/free · {saved}/{enabled}/{healthy_db}/{connected}/{available}\n"
-                    f"auto targets enabled · {auto_targets}\n"
-                    f"auto sessions assigned · {assigned}\n"
-                    f"last auto cycle · {html(str(self.r.auto_calls.last_cycle_at or 'never'))}\n"
-                    f"last auto error · {html(self.r.auto_calls.last_error_type or 'none')}</blockquote>\n"
-                    "If auto targets = 0: open Automatic calls and enable per channel.\n"
-                    "If free = 0: wait for health reload or free busy accounts.\n"
-                    "If maintenance/calls flags are off: fix Variables or /maintenance off."
-                )
                 return
             raise UserError("Unknown command. Use /help.")
         if await self.automation_message(message, uid, state, text):

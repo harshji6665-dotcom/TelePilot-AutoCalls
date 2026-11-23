@@ -467,6 +467,9 @@ class AutoCalls:
             logger.warning("Automatic-call cycle skipped; reason=%s", reason)
             await self.quiesce()
             return
+        if getattr(self.r, "pool_loading", False):
+            logger.info("Automatic-call cycle deferred; account pool still loading")
+            return
         healthy = await self.account_rows()
         rows = (
             await self.r.store.db.targets.find({"auto_call.enabled": True})

@@ -256,24 +256,19 @@ class Runtime:
             raise RuntimeError("Startup interrupted or singleton lease lost during account loading")
         self.error_handler = ErrorAlertHandler(self.notifier)
         logging.getLogger().addHandler(self.error_handler)
-        self.tasks.extend(
-            [
-                asyncio.create_task(self.notifier.run(), name="notifications"),
-                asyncio.create_task(self.jobs.run(), name="scheduler"),
-                asyncio.create_task(self.auto_calls.run(), name="auto-calls"),
-                asyncio.create_task(self.periodic(), name="maintenance"),
-                asyncio.create_task(self.account_health(), name="account-health"),
-                asyncio.create_task(
-                    self.dp.start_polling(
-                        self.bot, handle_signals=False, close_bot_session=False, allowed_updates=["message", "callback_query"]
-                    ),
-                    name="bot-polling",
+        # Bot polling first so /start and /diag respond during account load.
+        self.tasks.append(
+            asyncio.create_task(
+                self.dp.start_polling(
+                    self.bot, handle_signals=False, close_bot_session=False, allowed_updates=["message", "callback_query"]
                 ),
-            ]
+                name="bot-polling",
+            )
         )
+        self.tasks.append(asyncio.create_task(self.notifier.run(), name="notifications"))
         self.ready = True
-        # First roster load before advertising readiness to operators so empty-pool
-        # and session-safety problems are visible in the same startup window.
+        # Load the account roster BEFORE auto-calls/jobs so probes do not run
+        # against an empty in-memory pool (healthy_accounts=0 false negatives).
         try:
             await self.pool.sync()
         except Exception as exc:
@@ -291,6 +286,14 @@ class Runtime:
             healthy_slots,
             safety,
         )
+        self.tasks.extend(
+            [
+                asyncio.create_task(self.jobs.run(), name="scheduler"),
+                asyncio.create_task(self.auto_calls.run(), name="auto-calls"),
+                asyncio.create_task(self.periodic(), name="maintenance"),
+                asyncio.create_task(self.account_health(), name="account-health"),
+            ]
+        )
         hint = (
             "No connected user accounts yet. Owner: open the bot private chat → Accounts → Sign in."
             if healthy_slots == 0
@@ -300,7 +303,7 @@ class Runtime:
             "<b>TelePilot is online</b>\n"
             f"<blockquote>Bot workers are online. Saved accounts: {saved}, enabled: {enabled}, connected now: {healthy_slots}. "
             f"Session safety: {html(safety)}. {html(hint)} "
-            "Use /sessionguard and /health for details. Original encrypted data is retained.</blockquote>",
+            "Use /sessionguard, /diag and /health for details. Original encrypted data is retained.</blockquote>",
             "startup:" + self.store.instance,
         )
 
