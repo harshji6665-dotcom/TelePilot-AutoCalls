@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import os
 from pathlib import Path
 import re
 import time
@@ -42,13 +43,47 @@ class BrowserLimiter:
         return count < 10
 
 
+def _allowed_hosts(public_base_url: str) -> list[str]:
+    """Build TrustedHost allowlist for local, Railway, and configured public origin.
+
+    Starlette treats a leading-dot pattern (e.g. ``.up.railway.app``) as a
+    suffix match for that host and all subdomains. Without the public domain
+    (or Railway wildcard), browsers hit ``Invalid host header``.
+    """
+    hosts = {
+        "localhost",
+        "127.0.0.1",
+        "app",
+        "healthcheck.railway.app",
+        ".up.railway.app",
+        ".railway.app",
+        ".railway.internal",
+    }
+    candidates = [
+        public_base_url,
+        os.getenv("PUBLIC_BASE_URL", ""),
+        os.getenv("PUBLIC_DOMAIN", ""),
+        os.getenv("RAILWAY_PUBLIC_DOMAIN", ""),
+        os.getenv("RAILWAY_STATIC_URL", ""),
+    ]
+    for value in candidates:
+        if not value or not str(value).strip():
+            continue
+        text = str(value).strip()
+        if "://" not in text:
+            text = "https://" + text
+        hostname = urlparse(text).hostname
+        if hostname:
+            hosts.add(hostname)
+    return sorted(hosts)
+
+
 def build_web(runtime):
     config, login = runtime.config, runtime.login
     app = FastAPI(title="TelePilot", docs_url=None, redoc_url=None, openapi_url=None)
-    public_host = urlparse(config.public_base_url).hostname
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["localhost", "127.0.0.1", "app", "healthcheck.railway.app"] + ([public_host] if public_host else []),
+        allowed_hosts=_allowed_hosts(config.public_base_url),
     )
     template = (Path(__file__).parent / "templates/login.html").read_text(encoding="utf-8")
     script = re.search(r"<script>(.*?)</script>", template, re.S).group(1)
