@@ -136,7 +136,7 @@ class Guard(BaseMiddleware):
             command = (getattr(raw, "text", None) or "").split(maxsplit=1)
             command = command[0].split("@")[0].lower() if command else ""
             callback = (getattr(event, "data", None) or "") if isinstance(event, CallbackQuery) else ""
-            exempt = command in {"/help", "/id", "/chatid", "/cancel", "/autostop"}
+            exempt = command in {"/help", "/id", "/chatid", "/cancel", "/autostop", "/diag"}
             exempt = exempt or callback in {"fs:check", "nav:help", "nav:rules", "contact:admin", "auto:off_all"}
             exempt = exempt or callback.startswith(("auto:off:", "job:cancel:"))
             if subscriptions and not exempt:
@@ -1308,6 +1308,35 @@ class BotPanel(PlanUI, AutomationUI, StartPhotoUI, SessionSafetyUI):
                 return
             if command == "/updates":
                 await message.answer("<blockquote>" + html((await self.r.compat.check(notify=False))[:3400]) + "</blockquote>")
+                return
+            if command == "/diag":
+                await self.r.access.require_staff(uid)
+                saved = await self.r.store.db.accounts.count_documents({})
+                enabled = await self.r.store.db.accounts.count_documents({"enabled": True})
+                healthy_db = await self.r.store.db.accounts.count_documents({"enabled": True, "status": "healthy"})
+                connected = sum(1 for slot in self.r.pool.slots.values() if not slot.disconnected and not slot.closing)
+                available = len(await self.r.pool.available())
+                auto_targets = await self.r.store.db.targets.count_documents({"auto_call.enabled": True})
+                assigned = sum(len(accounts) for accounts in self.r.auto_calls.assignments.values())
+                maintenance = await self.r.store.setting("maintenance", False)
+                safety = "paused" if self.r.pool.safety.paused else "ok"
+                await message.answer(
+                    "<b>runtime diagnostics</b>\n"
+                    f"<blockquote>ready · {self.r.ready}\n"
+                    f"leader · {getattr(self.r, 'leader', False)}\n"
+                    f"maintenance · {maintenance}\n"
+                    f"calls_enabled · {self.r.config.calls_enabled}\n"
+                    f"auto_calls_enabled · {self.r.config.auto_calls_enabled}\n"
+                    f"session_safety · {html(safety)}\n"
+                    f"accounts saved/enabled/healthy_db/connected/free · {saved}/{enabled}/{healthy_db}/{connected}/{available}\n"
+                    f"auto targets enabled · {auto_targets}\n"
+                    f"auto sessions assigned · {assigned}\n"
+                    f"last auto cycle · {html(str(self.r.auto_calls.last_cycle_at or 'never'))}\n"
+                    f"last auto error · {html(self.r.auto_calls.last_error_type or 'none')}</blockquote>\n"
+                    "If auto targets = 0: open Automatic calls and enable per channel.\n"
+                    "If free = 0: wait for health reload or free busy accounts.\n"
+                    "If maintenance/calls flags are off: fix Variables or /maintenance off."
+                )
                 return
             raise UserError("Unknown command. Use /help.")
         if await self.automation_message(message, uid, state, text):

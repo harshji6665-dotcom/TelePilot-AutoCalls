@@ -457,6 +457,14 @@ class AutoCalls:
 
     async def tick(self):
         if not self.r.config.auto_calls_enabled or not self.r.config.calls_enabled or await self.r.store.setting("maintenance", False):
+            reason = (
+                "auto_calls_enabled=false"
+                if not self.r.config.auto_calls_enabled
+                else "calls_enabled=false"
+                if not self.r.config.calls_enabled
+                else "maintenance=on"
+            )
+            logger.warning("Automatic-call cycle skipped; reason=%s", reason)
             await self.quiesce()
             return
         healthy = await self.account_rows()
@@ -471,6 +479,8 @@ class AutoCalls:
             if session["target_id"] not in enabled:
                 self.sessions.pop(sid, None)
         active, definitive, denied = set(), set(), set()
+        detected = 0
+        probe_errors = 0
         if rows:
             shift = self.probe_cursor % len(rows)
             rows = rows[shift:] + rows[:shift]
@@ -488,6 +498,7 @@ class AutoCalls:
                     if session["target_id"] == target["_id"] and (not call or session["call_id"] != call.id):
                         await self.terminal(old_sid, "call ended or replaced")
                 if call:
+                    detected += 1
                     sid = await self.ensure_session(target, call, plan)
                     if sid:
                         active.add(sid)
@@ -499,10 +510,17 @@ class AutoCalls:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                probe_errors += 1
                 if isinstance(exc, UserError):
                     denied.add(target["_id"])  # Explicit authorization failure is not a transient network probe.
                 if hasattr(exc, "retry_after"):
                     self.bot_not_before = time.monotonic() + exc.retry_after + 1
+                logger.warning(
+                    "Auto-call probe failed; target=%s error=%s detail=%s",
+                    target.get("_id"),
+                    type(exc).__name__,
+                    str(exc)[:120] if isinstance(exc, UserError) else type(exc).__name__,
+                )
                 await self.target_status(
                     target, "check delayed" if not isinstance(exc, UserError) else str(exc)[:140], error_type=type(exc).__name__
                 )
@@ -521,6 +539,16 @@ class AutoCalls:
             except UserError:
                 pass
         await self.reconcile(active)
+        assigned = sum(len(accounts) for accounts in self.assignments.values())
+        logger.info(
+            "Automatic-call cycle; targets=%s healthy_accounts=%s calls_detected=%s active_sessions=%s assigned=%s probe_errors=%s",
+            len(rows),
+            len(healthy),
+            detected,
+            len(active),
+            assigned,
+            probe_errors,
+        )
         self.last_cycle_at, self.last_error_type = now(), None
 
     async def quiesce(self):
