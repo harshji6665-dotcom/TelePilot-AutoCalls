@@ -272,11 +272,37 @@ class Runtime:
             ]
         )
         self.ready = True
+        # First roster load before advertising readiness to operators so empty-pool
+        # and session-safety problems are visible in the same startup window.
+        try:
+            await self.pool.sync()
+        except Exception as exc:
+            logger.warning("Initial account pool sync failed; error=%s", type(exc).__name__)
+        self.pool_loading = False
+        saved = await self.store.db.accounts.count_documents({})
+        enabled = await self.store.db.accounts.count_documents({"enabled": True})
+        healthy_slots = sum(1 for slot in self.pool.slots.values() if not slot.disconnected and not slot.closing)
+        safety = "paused" if self.pool.safety.paused else "ok"
+        logger.info(
+            "TelePilot started; version=%s accounts_saved=%s enabled=%s connected=%s session_safety=%s",
+            __version__,
+            saved,
+            enabled,
+            healthy_slots,
+            safety,
+        )
+        hint = (
+            "No connected user accounts yet. Owner: open the bot private chat → Accounts → Sign in."
+            if healthy_slots == 0
+            else f"{healthy_slots} account(s) connected in memory."
+        )
         await self.notifier.owners(
-            "<b>TelePilot is online</b>\n<blockquote>Bot workers are online; this does not mean every account authorization is valid. Use /sessionguard for session safety and /health for current results. Original encrypted data is retained.</blockquote>",
+            "<b>TelePilot is online</b>\n"
+            f"<blockquote>Bot workers are online. Saved accounts: {saved}, enabled: {enabled}, connected now: {healthy_slots}. "
+            f"Session safety: {html(safety)}. {html(hint)} "
+            "Use /sessionguard and /health for details. Original encrypted data is retained.</blockquote>",
             "startup:" + self.store.instance,
         )
-        logger.info("TelePilot started; version=%s", __version__)
 
     async def wait(self):
         stopper = asyncio.create_task(self.stop_event.wait(), name="stop-event")

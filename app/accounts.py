@@ -138,6 +138,9 @@ class AccountPool:
         self.safety.require_allowed()
         durable = DurableStringSession(session)
         profile = random.choice(DEVICE_PROFILES)
+        # Cloud hosts (Railway/Render) often drop idle MTProto or prefer broken
+        # IPv6 paths. Prefer IPv4, more connect retries, and a longer socket
+        # timeout so temporary blips do not strand the account offline.
         client = TelegramClient(
             durable,
             self.config.api_id,
@@ -150,11 +153,13 @@ class AccountPool:
             flood_sleep_threshold=24,
             # A DC migration must get a subsequent attempt. Zero retries can
             # switch DC successfully and then end as generic ValueError.
-            request_retries=3,
+            request_retries=5,
             raise_last_call_error=True,
-            connection_retries=2,
-            retry_delay=1.5,
+            connection_retries=5,
+            retry_delay=2,
             auto_reconnect=True,
+            timeout=20,
+            use_ipv6=False,
         )
 
         self.client_registry[id(client)] = client
