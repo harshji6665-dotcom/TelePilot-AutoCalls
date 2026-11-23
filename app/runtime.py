@@ -124,10 +124,11 @@ class Runtime:
     async def account_health(self):
         # Full identity health probes retain the configured interval. A cheap
         # wakeable tick recovers only failed transports/checkpoints in between.
+        # pool_loading is only for cold boot (initial sync). Do not flip it here
+        # or auto-calls freeze for minutes on every health_interval scan.
         next_scan = 0.0
         while not self.stopping:
             full = asyncio.get_running_loop().time() >= next_scan
-            self.pool_loading = full
             try:
                 if full:
                     await self.pool.sync()
@@ -140,8 +141,6 @@ class Runtime:
                 logger.exception("Account recovery iteration failed; saved authorizations retained")
                 if full:
                     next_scan = asyncio.get_running_loop().time() + 15
-            finally:
-                self.pool_loading = False
             await self.pool.wait_for_recovery(min(15, max(0.1, next_scan - asyncio.get_running_loop().time())))
 
     async def lease_heartbeat(self):

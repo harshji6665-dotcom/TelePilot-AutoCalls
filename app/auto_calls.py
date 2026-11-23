@@ -467,7 +467,9 @@ class AutoCalls:
             logger.warning("Automatic-call cycle skipped; reason=%s", reason)
             await self.quiesce()
             return
-        if getattr(self.r, "pool_loading", False):
+        # Only wait when NOTHING is connected yet (cold boot). Periodic health
+        # scans also flip pool_loading; those must not pause live auto-calls.
+        if getattr(self.r, "pool_loading", False) and not self.r.pool.slots:
             logger.info("Automatic-call cycle deferred; account pool still loading")
             return
         healthy = await self.account_rows()
